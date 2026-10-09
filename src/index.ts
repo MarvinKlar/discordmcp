@@ -42,7 +42,7 @@ async function findGuild(guildIdentifier?: string) {
     const guilds = client.guilds.cache.filter(
       g => g.name.toLowerCase() === guildIdentifier.toLowerCase()
     );
-    
+
     if (guilds.size === 0) {
       const availableGuilds = Array.from(client.guilds.cache.values())
         .map(g => `"${g.name}"`).join(', ');
@@ -60,7 +60,7 @@ async function findGuild(guildIdentifier?: string) {
 // Helper function to find a channel by name or ID within a specific guild
 async function findChannel(channelIdentifier: string, guildIdentifier?: string): Promise<TextChannel> {
   const guild = await findGuild(guildIdentifier);
-  
+
   // First try to fetch by ID
   try {
     const channel = await client.channels.fetch(channelIdentifier);
@@ -102,6 +102,7 @@ const ReadMessagesSchema = z.object({
   server: z.string().optional().describe('Server name or ID (optional if bot is only in one server)'),
   channel: z.string().describe('Channel name (e.g., "general") or ID'),
   limit: z.number().min(1).max(100).default(50),
+  before: z.string().optional().describe('Only messages before this message ID (pagination)'),
 });
 
 // Create server instance
@@ -162,6 +163,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               description: "Number of messages to fetch (max 100)",
               default: 50,
             },
+            before: {
+              type: "string",
+              description: "Only messages before this message ID (pagination)",
+            },
           },
           required: ["channel"],
         },
@@ -179,7 +184,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "send-message": {
         const { channel: channelIdentifier, message } = SendMessageSchema.parse(args);
         const channel = await findChannel(channelIdentifier);
-        
+
         const sent = await channel.send(message);
         return {
           content: [{
@@ -190,17 +195,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "read-messages": {
-        const { channel: channelIdentifier, limit } = ReadMessagesSchema.parse(args);
-        const channel = await findChannel(channelIdentifier);
-        
-        const messages = await channel.messages.fetch({ limit });
-        const formattedMessages = Array.from(messages.values()).map(msg => ({
+        const { server: serverIdentifier, channel: channelIdentifier, limit, before } = ReadMessagesSchema.parse(args);
+        const channel = await findChannel(channelIdentifier, serverIdentifier);
+
+        const messages = await channel.messages.fetch({ limit, before });
+        const formattedMessages = await Promise.all(Array.from(messages.values()).map(async msg => ({
+          id: msg.id,
+          reactions: await Promise.all(msg.reactions.cache.map(async r => ({
+            emoji: r.emoji.name,
+            count: r.count,
+            users: (await r.users.fetch()).map(u => u.tag),
+          }))),
           channel: `#${channel.name}`,
           server: channel.guild.name,
           author: msg.author.tag,
           content: msg.content,
           timestamp: msg.createdAt.toISOString(),
-        }));
+        })));
 
         return {
           content: [{
@@ -237,7 +248,7 @@ async function main() {
   if (!token) {
     throw new Error('DISCORD_TOKEN environment variable is not set');
   }
-  
+
   try {
     // Login to Discord
     await client.login(token);
